@@ -180,22 +180,15 @@ def tool_read_file(context, args):
     return f"# {path.relative_to(context.root)}\n{body}"
 
 
-def tool_search(context, args):
-    pattern = str(args.get("pattern", "")).strip()
-    if not pattern:
-        raise ValueError("pattern must not be empty")
-    path = context.path(args.get("path", "."))
+def _decode_process_output(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
-    if shutil.which("rg"):
-        # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
-        result = subprocess.run(
-            ["rg", "-n", "--smart-case", "--max-count", "200", pattern, str(path)],
-            cwd=context.root,
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout.strip() or result.stderr.strip() or "(no matches)"
 
+def _search_with_python(context, pattern, path):
     matches = []
     files = [path] if path.is_file() else [
         item for item in path.rglob("*")
@@ -208,6 +201,48 @@ def tool_search(context, args):
                 if len(matches) >= 200:
                     return "\n".join(matches)
     return "\n".join(matches) or "(no matches)"
+
+
+def _search_with_rg(context, pattern, path):
+    # 子进程输出先按 bytes 收集，再由 harness 显式按 UTF-8 解码。
+    # 这样不会依赖 Windows 当前的 GBK locale，也不会让 subprocess 的
+    # reader thread 在文本解码阶段提前失败。
+    result = subprocess.run(
+        ["rg", "-n", "--smart-case", "--max-count", "200", pattern, str(path)],
+        cwd=context.root,
+        capture_output=True,
+        text=False,
+        timeout=20,
+    )
+    stdout = _decode_process_output(result.stdout).strip()
+    stderr = _decode_process_output(result.stderr).strip()
+    if result.returncode == 0:
+        return stdout or "(no matches)"
+    if result.returncode == 1:
+        return "(no matches)"
+    raise subprocess.CalledProcessError(
+        result.returncode,
+        result.args,
+        output=stdout,
+        stderr=stderr,
+    )
+
+
+def tool_search(context, args):
+    pattern = str(args.get("pattern", "")).strip()
+    if not pattern:
+        raise ValueError("pattern must not be empty")
+    path = context.path(args.get("path", "."))
+
+    if shutil.which("rg"):
+        # rg 是快速路径；存在但无法启动、超时或异常退出时，自动降级到
+        # 语义更简单但不依赖外部进程的 Python 搜索。
+        try:
+            return _search_with_rg(context, pattern, path)
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            pass
+
+    return _search_with_python(context, pattern, path)
 
 
 def tool_run_shell(context, args):
