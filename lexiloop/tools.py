@@ -4,12 +4,18 @@
 如何做参数校验，以及最终如何执行，都是在这里定义的。
 """
 
+import os
 import shutil
 import subprocess
 import textwrap
 from functools import partial
 
 from .workspace import IGNORED_PATH_NAMES
+
+
+# Resolve the Windows shell while the process still has its normal environment.
+# Some security tests intentionally clear os.environ before running a tool.
+_WINDOWS_POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 BASE_TOOL_SPECS = {
     "list_files": {
@@ -252,24 +258,50 @@ def tool_run_shell(context, args):
     timeout = int(args.get("timeout", 20))
     if timeout < 1 or timeout > 120:
         raise ValueError("timeout must be in [1, 120]")
+    if os.name == "nt":
+        if _WINDOWS_POWERSHELL:
+            powershell_command = command
+            if command.lstrip().startswith(("'", '"')):
+                # POSIX shlex commonly quotes an absolute executable path.
+                # PowerShell needs the call operator before a quoted command.
+                powershell_command = "& " + command
+            shell_command = [
+                _WINDOWS_POWERSHELL,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                powershell_command,
+            ]
+        else:
+            system_root = os.environ.get("SystemRoot", r"C:\Windows")
+            command_prompt = os.environ.get(
+                "ComSpec",
+                os.path.join(system_root, "System32", "cmd.exe"),
+            )
+            shell_command = [command_prompt, "/d", "/s", "/c", command]
+    else:
+        shell_command = [os.environ.get("SHELL", "/bin/sh"), "-c", command]
+
     result = subprocess.run(
-        command,
+        shell_command,
         cwd=context.root,
-        shell=True,
         capture_output=True,
-        text=True,
+        text=False,
         timeout=timeout,
         # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
         # 目的是减少敏感信息被意外带进命令执行环境的风险。
         env=context.shell_env(),
     )
+    stdout = _decode_process_output(result.stdout).strip()
+    stderr = _decode_process_output(result.stderr).strip()
     return textwrap.dedent(
         f"""\
         exit_code: {result.returncode}
         stdout:
-        {result.stdout.strip() or "(empty)"}
+        {stdout or "(empty)"}
         stderr:
-        {result.stderr.strip() or "(empty)"}
+        {stderr or "(empty)"}
         """
     ).strip()
 

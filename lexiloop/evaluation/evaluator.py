@@ -1,8 +1,10 @@
 import hashlib
 import json
 import locale as locale_module
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,19 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_NEW_TOKENS = 64
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+
+
+def _verifier_command(verifier):
+    """Parse a trusted benchmark verifier without platform shell quoting."""
+
+    command = shlex.split(str(verifier), posix=True)
+    if not command:
+        raise ValueError("benchmark verifier must not be empty")
+    executable = Path(command[0]).name.lower()
+    if executable in {"python", "python.exe", "python3", "python3.exe"}:
+        command[0] = sys.executable
+    return command
+
 
 REQUIRED_BENCHMARK_KEYS = ("schema_version", "tasks")
 REQUIRED_TASK_KEYS = (
@@ -490,11 +505,12 @@ class BenchmarkEvaluator:
         artifact_digest = _digest_file(artifact_file) if expected_artifact_exists else ""
 
         verifier = subprocess.run(
-            task["verifier"],
+            _verifier_command(task["verifier"]),
             cwd=fixture_copy_root,
-            shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         within_budget = task_state.tool_steps <= int(task["step_budget"])

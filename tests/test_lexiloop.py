@@ -1,5 +1,6 @@
 import os
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -1110,11 +1111,13 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
 
 def test_trace_and_report_redact_secret_env_values(tmp_path):
     secret = "sk-test-secret-123"
+    print_secret = f"print({json.dumps(secret)})"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(print_secret)}"
     with patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True):
         agent = build_agent(
             tmp_path,
             [
-                '<tool>{"name":"run_shell","args":{"command":"printf \'%s\' \'sk-test-secret-123\'","timeout":20}}</tool>',
+                f'<tool>{{"name":"run_shell","args":{{"command":{json.dumps(command)},"timeout":20}}}}</tool>',
                 "<final>Masked.</final>",
             ],
         )
@@ -1343,11 +1346,13 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
 
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):
     agent = build_agent(tmp_path, [])
+    script = 'from pathlib import Path; Path("README.md").write_text("changed\\n", encoding="utf-8"); raise SystemExit(1)'
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 
     result = agent.run_tool(
         "run_shell",
         {
-            "command": "printf 'changed\\n' > README.md && exit 1",
+            "command": command,
             "timeout": 20,
         },
     )
@@ -1618,11 +1623,13 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
 
 def test_partial_success_creates_process_note_for_exploration_history(tmp_path):
     agent = build_agent(tmp_path, [])
+    script = 'from pathlib import Path; Path("README.md").write_text("changed\\n", encoding="utf-8"); raise SystemExit(1)'
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 
     agent.run_tool(
         "run_shell",
         {
-            "command": "printf 'changed\\n' > README.md && exit 1",
+            "command": command,
             "timeout": 20,
         },
     )

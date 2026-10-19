@@ -4,6 +4,20 @@ import os
 
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
+SHELL_INFRASTRUCTURE_ENV_NAMES = (
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "TEMP",
+    "TMP",
+)
+SHELL_INFRASTRUCTURE_ENV_DEFAULTS = {
+    name: os.environ[name]
+    for name in SHELL_INFRASTRUCTURE_ENV_NAMES
+    if name in os.environ
+}
 
 
 def _normalized_secret_names(secret_env_names):
@@ -88,6 +102,7 @@ def redact_artifact(value, key=None, env=None, secret_env_names=None):
 
 
 def shell_env(env=None, allowlist=(), root="."):
+    use_host_fallbacks = env is None
     env = os.environ if env is None else env
     filtered = {
         name: env[name]
@@ -95,6 +110,11 @@ def shell_env(env=None, allowlist=(), root="."):
         if name in env
     }
     filtered["PWD"] = str(root)
-    if "PATH" not in filtered and env.get("PATH"):
-        filtered["PATH"] = env["PATH"]
+    for name in SHELL_INFRASTRUCTURE_ENV_NAMES:
+        if name not in filtered:
+            value = env.get(name)
+            if not value and use_host_fallbacks:
+                value = SHELL_INFRASTRUCTURE_ENV_DEFAULTS.get(name)
+            if value:
+                filtered[name] = value
     return filtered

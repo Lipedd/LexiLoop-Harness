@@ -1,4 +1,5 @@
 import json
+import locale
 from pathlib import Path
 from collections import Counter
 
@@ -115,7 +116,7 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
         "max_new_tokens": 64,
     }
     assert reproducibility["timezone"] == "Asia/Shanghai"
-    assert reproducibility["locale"] == "C.UTF-8"
+    assert reproducibility["locale"] == locale.setlocale(locale.LC_CTYPE)
 
     for row in artifact["rows"]:
         assert not row["fixture_copy_relpath"].startswith("/")
