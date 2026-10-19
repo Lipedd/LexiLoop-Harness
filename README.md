@@ -1,6 +1,6 @@
 # LexiLoop Harness
 
-`LexiLoop` 是一个运行在终端里的本地 coding agent，项目完整名称为 `LexiLoop-Harness`。它会理解当前代码仓库，通过受约束的工具完成读取、修改和验证，并把会话、运行轨迹与恢复状态保存在本地 `.lexiloop/` 目录中。
+`LexiLoop` 是一个运行在终端里的本地 coding agent，项目完整名称为 `LexiLoop-Harness`。它会理解当前代码仓库，通过受约束的工具完成读取、修改和验证，并把会话、运行轨迹与恢复状态保存在本地 `.lexiloop/` 目录中；同时把技术英语学习嵌入真实的编程输入过程，记录单词的展示、掌握、复习和实际使用情况。
 
 它更像一个能在仓库里持续工作的命令行助手，不是纯聊天窗口。你可以拿它做代码排查、测试修复、仓库分析，或者让它在当前项目里执行一次性的工程任务。
 
@@ -17,6 +17,7 @@
 - Python 包名是 `lexiloop`
 - CLI 命令是 `lexi`
 - 模块入口是 `python -m lexiloop`
+- 输入时展示技术英语单词，并提供快捷标记与学习统计
 - 会话保存在 `.lexiloop/sessions/`
 - 每次运行的工件保存在 `.lexiloop/runs/<run_id>/`
 - 支持四类模型后端：
@@ -223,8 +224,25 @@ uv run lexi --provider ollama --model qwen3.5:4b
 - `/help`：查看内置命令
 - `/memory`：查看提炼后的工作记忆
 - `/session`：查看当前会话文件路径
+- `/word`：查看当前技术英语单词
+- `/word next`：切换到下一个单词
+- `/word known`：标记当前单词已掌握
+- `/word again`：标记当前单词需要复习
+- `/stats`：查看今日和累计学习统计
 - `/reset`：清空当前会话状态
 - `/exit` 或 `/quit`：退出 REPL
+
+## 技术英语学习
+
+交互模式的输入框底部会显示一个技术英语单词、中文释义和编程例句。输入时可以直接使用快捷键：
+
+- `Alt+K`：已掌握并切换下一个词
+- `Alt+A`：标记为需要复习并切换下一个词
+- `Alt+J`：暂不评价，直接切换下一个词
+
+LexiLoop 会分别记录单词被展示（`shown`）、标记掌握（`known`）、需要复习（`again`）以及在真实提问中被使用（`used`）的事件。“看过”不会被自动算作“学会”。学习事件保存在用户级的 `~/.lexiloop/learning/events.jsonl`，因此切换代码仓库后仍会沿用同一份进度；日志只保存单词和事件，不保存完整提问。
+
+可以用 `lexi --no-learning` 临时关闭，或设置 `LEXILOOP_LEARNING=0` 长期关闭。若终端不支持增强输入界面，程序会自动退回普通输入模式，coding agent 仍可正常使用。
 
 ## 安全与持久化
 

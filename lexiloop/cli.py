@@ -12,6 +12,9 @@ import sys
 import textwrap
 
 from .config import load_project_env, provider_env
+from .learning.prompt import LearningPrompt
+from .learning.service import VocabularyCoach
+from .learning.store import LearningStore
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .runtime import LexiLoop, SessionStore
 from .workspace import WorkspaceContext, middle
@@ -61,8 +64,14 @@ HELP_DETAILS = textwrap.dedent(
     /help    Show this help message.
     /memory  Show the agent's distilled working memory.
     /session Show the path to the saved session file.
+    /word    Show or update the current English word.
+             Usage: /word [next|known|again]
+    /stats   Show English-learning statistics.
     /reset   Clear the current session history and memory.
     /exit    Exit the agent.
+
+    Learning shortcuts while typing:
+    Alt+K mastered · Alt+A review again · Alt+J next word
     """
 ).strip()
 
@@ -199,6 +208,23 @@ def _supports_color(stream=None):
     if "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
         return False
     return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def _configure_stdio_fallback():
+    """Prevent legacy Windows encodings from crashing on terminal glyphs.
+
+    Interactive modern terminals keep their normal Unicode output. Redirected
+    streams using GBK or another narrower encoding replace only unsupported
+    glyphs instead of terminating the whole CLI.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
 
 
 def _style(text, *styles, enabled):
@@ -399,10 +425,69 @@ def build_arg_parser():
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
+    parser.add_argument(
+        "--no-learning",
+        action="store_true",
+        help="Disable the interactive technical-English learning bar.",
+    )
     return parser
 
 
+def _learning_enabled(args) -> bool:
+    if getattr(args, "no_learning", False):
+        return False
+    configured = os.environ.get("LEXILOOP_LEARNING", "1").strip().lower()
+    return configured not in {"0", "false", "no", "off"}
+
+
+def _build_learning_ui(args, agent):
+    """Build the optional UI without making it a runtime dependency."""
+
+    if not _learning_enabled(args):
+        return None, None
+    try:
+        coach = VocabularyCoach(
+            store=LearningStore(),
+            session_id=agent.session.get("id"),
+        )
+        return coach, LearningPrompt(coach)
+    except Exception as exc:
+        print(f"English learning disabled: {exc}", file=sys.stderr)
+        return None, None
+
+
+def _handle_learning_command(user_input, coach):
+    """Return ``(handled, output)`` for commands owned by the learning layer."""
+
+    command, *arguments = user_input.split()
+    if command not in {"/word", "/stats"}:
+        return False, ""
+    if coach is None:
+        return True, "English learning is disabled. Start without --no-learning to enable it."
+    try:
+        if command == "/stats":
+            if arguments:
+                return True, "Usage: /stats"
+            return True, coach.stats_text()
+
+        action = arguments[0].lower() if arguments else "show"
+        if len(arguments) > 1 or action not in {"show", "next", "known", "again"}:
+            return True, "Usage: /word [next|known|again]"
+        if action == "next":
+            coach.next_word()
+        elif action == "known":
+            coach.mark_known()
+        elif action == "again":
+            coach.mark_again()
+        if action != "show":
+            return True, coach.notice
+        return True, coach.word_text()
+    except Exception as exc:
+        return True, f"English learning is temporarily unavailable: {exc}"
+
+
 def main(argv=None):
+    _configure_stdio_fallback()
     args = build_arg_parser().parse_args(argv)
     agent = build_agent(args)
 
@@ -422,15 +507,20 @@ def main(argv=None):
                 return 1
         return 0
 
+    coach, learning_ui = _build_learning_ui(args, agent)
+
     while True:
         # 交互模式：每次读取一条用户输入，交给同一个 agent，
         # 因此 session history 和 working memory 会跨轮延续。
         try:
-            prompt_color = _supports_color()
-            prompt = _style("lexi", "mint", "bold", enabled=prompt_color) + _style(
-                " ❯ ", "violet", "bold", enabled=prompt_color
-            )
-            user_input = input("\n" + prompt).strip()
+            if learning_ui is not None:
+                user_input = learning_ui.read().strip()
+            else:
+                prompt_color = _supports_color()
+                prompt = _style("lexi", "mint", "bold", enabled=prompt_color) + _style(
+                    " ❯ ", "violet", "bold", enabled=prompt_color
+                )
+                user_input = input("\n" + prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print("")
             return 0
@@ -452,6 +542,19 @@ def main(argv=None):
             agent.reset()
             print("session reset")
             continue
+        handled, output = _handle_learning_command(user_input, coach)
+        if handled:
+            print(output)
+            continue
+
+        if coach is not None:
+            try:
+                coach.observe_prompt(user_input)
+            except Exception as exc:
+                # Learning is optional; storage failure must not block agent work.
+                print(f"English learning disabled: {exc}", file=sys.stderr)
+                coach = None
+                learning_ui = None
 
         print()
         try:

@@ -7,7 +7,9 @@ name = "lexiloop-harness"
 version = "0.1.0"
 description = "A local coding agent with an observable, recoverable harness"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "prompt-toolkit>=3.0,<4",
+]
 
 [project.scripts]
 lexi = "lexiloop.cli:main"
@@ -20,6 +22,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["lexiloop*"]
+
+[tool.setuptools.package-data]
+lexiloop = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
