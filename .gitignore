@@ -30,8 +30,8 @@ htmlcov/
 # Local scratch space
 tmp/
 .worktrees/
-.pico/
-.mini-pico/
+.lexiloop/
+.mini-lexiloop/
 artifacts/
 release/
 readme_intro_locked/
@@ -52,4 +52,4 @@ docs/*
 .DS_Store
 
 # Packaging metadata
-pico.egg-info/
+lexiloop_harness.egg-info/

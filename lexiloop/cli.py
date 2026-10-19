@@ -1,6 +1,6 @@
 """命令行入口。
 
-这个模块负责把“用户怎么启动 pico”翻译成 runtime 能理解的对象：
+这个模块负责把“用户怎么启动 lexiloop”翻译成 runtime 能理解的对象：
 解析参数、挑模型后端、构建工作区快照、恢复或新建 session，
 最后进入 one-shot 或交互式循环。
 """
@@ -13,33 +13,48 @@ import textwrap
 
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
-from .runtime import Pico, SessionStore
+from .runtime import LexiLoop, SessionStore
 from .workspace import WorkspaceContext, middle
 
 DEFAULT_SECRET_ENV_NAMES = (
-    "PICO_OPENAI_API_KEY",
+    "LEXILOOP_OPENAI_API_KEY",
     "OPENAI_API_KEY",
     "OPENAI_API_TOKEN",
-    "PICO_ANTHROPIC_API_KEY",
+    "LEXILOOP_ANTHROPIC_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
-    "PICO_DEEPSEEK_API_KEY",
+    "LEXILOOP_DEEPSEEK_API_KEY",
     "DEEPSEEK_API_KEY",
-    "PICO_RIGHT_CODES_API_KEY",
+    "LEXILOOP_RIGHT_CODES_API_KEY",
     "RIGHT_CODES_API_KEY",
     "GITHUB_PAT",
     "GH_PAT",
 )
 
+# LexiLoop 的终端形象是一只小型“代码探测器”：顶部信标代表感知工作区，
+# 正面的双目代表读取与验证，底部支点代表在本地仓库里稳定工作。
+# 每行由多个色块组成，避免退化成普通的黑白 ASCII 标志。
 WELCOME_ART = (
-    "        /\\___/\\\\",
-    "       (  o o  )",
-    "       /   ^   \\\\",
-    "      /|       |\\\\",
+    (("       ╭─", "cyan"), ("◆", "violet"), ("─╮", "cyan")),
+    (("     ╭─╯", "cyan"), ("   ", "mint"), ("╰─╮", "cyan")),
+    (("    ╭┴─────────┴╮", "cyan"),),
+    (("    │  ", "cyan"), ("●", "amber"), ("     ", "mint"), ("●", "amber"), ("  │", "cyan")),
+    (("    │     ", "cyan"), ("◆", "violet"), ("     │", "cyan")),
+    (("    ╰─╮", "cyan"), ("     ", "mint"), ("╭─╯", "cyan")),
+    (("      ╰─┬─┬─╯", "mint"),),
+    (("      ", "cyan"), ("◇", "violet"), (" ╰─╯ ", "mint"), ("◇", "violet")),
 )
-WELCOME_NAME = "pico"
-WELCOME_SUBTITLE = "local coding agent"
-WELCOME_STATUS = "calm shell, ready for work"
+
+ANSI_STYLES = {
+    "reset": "\x1b[0m",
+    "bold": "\x1b[1m",
+    "dim": "\x1b[2m",
+    "cyan": "\x1b[38;5;81m",
+    "mint": "\x1b[38;5;121m",
+    "violet": "\x1b[38;5;177m",
+    "amber": "\x1b[38;5;221m",
+    "muted": "\x1b[38;5;245m",
+}
 HELP_DETAILS = textwrap.dedent(
     """\
     Commands:
@@ -62,16 +77,16 @@ DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_PROVIDER = "deepseek"
 PROVIDER_CHOICES = ("ollama", "openai", "anthropic", "deepseek")
-SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
+SECRET_ENV_NAMES_VAR = "LEXILOOP_SECRET_ENV_NAMES"
 
 
 def _effective_provider(args):
     # Provider 选择优先级：
     # 1. 用户显式传入 --provider
-    # 2. 项目 .env / shell 里的 PICO_PROVIDER
+    # 2. 项目 .env / shell 里的 LEXILOOP_PROVIDER
     # 3. 代码里的默认 provider
     provider = getattr(args, "provider", None) or provider_env(
-        "PICO_PROVIDER", default=DEFAULT_PROVIDER
+        "LEXILOOP_PROVIDER", default=DEFAULT_PROVIDER
     )
     if provider not in PROVIDER_CHOICES:
         choices = ", ".join(PROVIDER_CHOICES)
@@ -88,17 +103,17 @@ def _effective_model(args, provider):
     if explicit_model:
         return explicit_model
     if provider == "openai":
-        model = provider_env("PICO_OPENAI_MODEL", ("OPENAI_MODEL",))
+        model = provider_env("LEXILOOP_OPENAI_MODEL", ("OPENAI_MODEL",))
         if model:
             return model
         return DEFAULT_OPENAI_MODEL
     if provider == "anthropic":
-        model = provider_env("PICO_ANTHROPIC_MODEL", ("ANTHROPIC_MODEL",))
+        model = provider_env("LEXILOOP_ANTHROPIC_MODEL", ("ANTHROPIC_MODEL",))
         if model:
             return model
         return DEFAULT_ANTHROPIC_MODEL
     if provider == "deepseek":
-        model = provider_env("PICO_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",))
+        model = provider_env("LEXILOOP_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",))
         if model:
             return model
         return DEFAULT_DEEPSEEK_MODEL
@@ -124,10 +139,10 @@ def _build_model_client(args):
     # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
     if provider == "openai":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("PICO_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
+        base_url = getattr(args, "base_url", None) or provider_env("LEXILOOP_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
         api_key = provider_env(
-            "PICO_OPENAI_API_KEY",
-            ("OPENAI_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+            "LEXILOOP_OPENAI_API_KEY",
+            ("OPENAI_API_KEY", "LEXILOOP_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "LEXILOOP_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
         )
         return OpenAICompatibleModelClient(
             model=model,
@@ -138,10 +153,10 @@ def _build_model_client(args):
         )
     if provider == "anthropic":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("PICO_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
+        base_url = getattr(args, "base_url", None) or provider_env("LEXILOOP_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
         api_key = provider_env(
-            "PICO_ANTHROPIC_API_KEY",
-            ("ANTHROPIC_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_OPENAI_API_KEY", "OPENAI_API_KEY"),
+            "LEXILOOP_ANTHROPIC_API_KEY",
+            ("ANTHROPIC_API_KEY", "LEXILOOP_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "LEXILOOP_OPENAI_API_KEY", "OPENAI_API_KEY"),
         )
         return AnthropicCompatibleModelClient(
             model=model,
@@ -152,15 +167,15 @@ def _build_model_client(args):
         )
     if provider == "deepseek":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("PICO_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
-        api_key = provider_env("PICO_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
+        base_url = getattr(args, "base_url", None) or provider_env("LEXILOOP_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
+        api_key = provider_env("LEXILOOP_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
         return AnthropicCompatibleModelClient(
             model=model,
             base_url=base_url,
             api_key=api_key,
             temperature=args.temperature,
             timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
-            # Pico currently uses text-encoded tool calls and does not replay
+            # LexiLoop currently uses text-encoded tool calls and does not replay
             # provider-native thinking blocks. Keep the default transport mode
             # deterministic until that protocol is implemented end to end.
             thinking={"type": "disabled"},
@@ -177,53 +192,132 @@ def _build_model_client(args):
     )
 
 
-def build_welcome(agent, model, host):
-    width = max(68, min(shutil.get_terminal_size((80, 20)).columns, 84))
-    inner = width - 4
-    gap = 3
-    left_width = (inner - gap) // 2
-    right_width = inner - gap - left_width
+def _supports_color(stream=None):
+    """Only emit ANSI escapes for an interactive terminal that allows color."""
 
-    def row(text):
-        body = middle(text, width - 4)
-        return f"| {body.ljust(width - 4)} |"
+    stream = stream or sys.stdout
+    if "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
+        return False
+    return bool(getattr(stream, "isatty", lambda: False)())
 
-    def divider(char="-"):
-        return "+" + char * (width - 2) + "+"
 
-    def center(text):
-        body = middle(text, inner)
-        return f"| {body.center(inner)} |"
+def _style(text, *styles, enabled):
+    if not enabled or not text:
+        return text
+    prefix = "".join(ANSI_STYLES[style] for style in styles)
+    return f"{prefix}{text}{ANSI_STYLES['reset']}"
 
-    def cell(label, value, size):
-        body = middle(f"{label:<9} {value}", size)
-        return body.ljust(size)
 
-    def pair(left_label, left_value, right_label, right_value):
-        left = cell(left_label, left_value, left_width)
-        right = cell(right_label, right_value, right_width)
-        return f"| {left}{' ' * gap}{right} |"
+def _plain_segments(segments):
+    return "".join(text for text, _ in segments)
 
-    line = divider("=")
-    rows = [center(text) for text in WELCOME_ART]
-    rows.extend(
+
+def _render_segments(segments, color):
+    return "".join(_style(text, style, enabled=color) for text, style in segments)
+
+
+def build_welcome(agent, model, host, *, color=None, terminal_width=None):
+    """Build the compact terminal welcome screen, with a plain-text fallback."""
+
+    del host  # Kept in the public signature for compatibility with existing callers.
+    color = _supports_color() if color is None else bool(color)
+    columns = terminal_width or shutil.get_terminal_size((88, 20)).columns
+    width = max(36, min(columns, 100))
+    art_plain = [_plain_segments(line) for line in WELCOME_ART]
+    art_rendered = [_render_segments(line, color) for line in WELCOME_ART]
+    art_width = max(len(line) for line in art_plain)
+
+    def brand(limit):
+        product_name = "LexiLoop"
+        suffix = "  local coding agent"
+        if limit < len(product_name) + len(suffix):
+            suffix = ""
+        plain = product_name + suffix
+        shades = ("violet", "cyan", "mint", "amber")
+        rendered_name = "".join(
+            _style(char, shades[index % len(shades)], "bold", enabled=color)
+            for index, char in enumerate(product_name)
+        )
+        return plain, rendered_name + _style(suffix, "muted", enabled=color)
+
+    def detail(label, value, limit):
+        label_width = 11
+        value = middle(value, max(1, limit - label_width))
+        plain = f"{label:<{label_width}}{value}"
+        rendered = _style(f"{label:<{label_width}}", "muted", enabled=color) + _style(
+            value, "bold", enabled=color
+        )
+        return plain, rendered
+
+    def info_rows(limit):
+        branch_summary = f"{agent.workspace.branch}  ·  approval {agent.approval_policy}"
+        return [
+            brand(limit),
+            (
+                "read · reason · build",
+                _style("read", "cyan", enabled=color)
+                + _style(" · ", "muted", enabled=color)
+                + _style("reason", "mint", enabled=color)
+                + _style(" · ", "muted", enabled=color)
+                + _style("build", "violet", enabled=color),
+            ),
+            ("", ""),
+            detail("workspace", agent.workspace.cwd, limit),
+            detail("model", model, limit),
+            detail("branch", branch_summary, limit),
+            detail("session", agent.session["id"], limit),
+        ]
+
+    gap = 4
+    output = []
+    if width >= 72:
+        info_width = width - art_width - gap
+        rows = info_rows(info_width)
+        row_count = max(len(art_plain), len(rows))
+        for index in range(row_count):
+            if index < len(art_plain):
+                left = art_rendered[index] + " " * (art_width - len(art_plain[index]))
+            else:
+                left = " " * art_width
+            right = rows[index][1] if index < len(rows) else ""
+            output.append((left + " " * gap + right).rstrip())
+    else:
+        indent = " " * max(0, (width - art_width) // 2)
+        output.extend(indent + line for line in art_rendered)
+        output.append("")
+        output.extend(rendered for _, rendered in info_rows(width))
+
+    divider = "─" * width
+    if width >= 62:
+        footer = (
+            _style("›", "violet", "bold", enabled=color)
+            + " "
+            + _style("/help", "cyan", "bold", enabled=color)
+            + _style(" commands   ·   ", "muted", enabled=color)
+            + _style("/memory", "mint", "bold", enabled=color)
+            + _style(" context   ·   ", "muted", enabled=color)
+            + _style("/exit", "amber", "bold", enabled=color)
+            + _style(" leave", "muted", enabled=color)
+        )
+    else:
+        footer = (
+            _style("›", "violet", "bold", enabled=color)
+            + " "
+            + _style("/help", "cyan", "bold", enabled=color)
+            + _style("  ·  ", "muted", enabled=color)
+            + _style("/exit", "amber", "bold", enabled=color)
+        )
+    output.extend(
         [
-            center(WELCOME_NAME),
-            center(WELCOME_SUBTITLE),
-            center(WELCOME_STATUS),
-            divider("-"),
-            row(""),
-            row("WORKSPACE  " + middle(agent.workspace.cwd, inner - 11)),
-            pair("MODEL", model, "BRANCH", agent.workspace.branch),
-            pair("APPROVAL", agent.approval_policy, "SESSION", agent.session["id"]),
-            row(""),
+            _style(divider, "muted", enabled=color),
+            footer,
         ]
     )
-    return "\n".join([line, *rows, line])
+    return "\n".join(output)
 
 
 def build_agent(args):
-    """根据 CLI 参数装配出一个可运行的 Pico 实例。
+    """根据 CLI 参数装配出一个可运行的 LexiLoop 实例。
 
     为什么存在：
     命令行参数只是字符串和开关，runtime 需要的是已经装配好的对象图：
@@ -232,7 +326,7 @@ def build_agent(args):
 
     输入 / 输出：
     - 输入：`argparse` 解析后的 `args`
-    - 输出：一个新的 `Pico`，或一个从旧 session 恢复出来的 `Pico`
+    - 输出：一个新的 `LexiLoop`，或一个从旧 session 恢复出来的 `LexiLoop`
 
     在 agent 链路里的位置：
     它是整个程序启动链路里最靠近 runtime 的装配点。`main()` 先调它，
@@ -243,13 +337,13 @@ def build_agent(args):
     workspace = WorkspaceContext.build(args.cwd)
     load_project_env(workspace.repo_root)
     configured_secret_names = _configured_secret_names(args)
-    store = SessionStore(workspace.repo_root + "/.pico/sessions")
+    store = SessionStore(workspace.repo_root + "/.lexiloop/sessions")
     model = _build_model_client(args)
     session_id = args.resume
     if session_id == "latest":
         session_id = store.latest()
     if session_id:
-        return Pico.from_session(
+        return LexiLoop.from_session(
             model_client=model,
             workspace=workspace,
             session_store=store,
@@ -259,7 +353,7 @@ def build_agent(args):
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
         )
-    return Pico(
+    return LexiLoop(
         model_client=model,
         workspace=workspace,
         session_store=store,
@@ -273,7 +367,7 @@ def build_agent(args):
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description="Minimal coding agent for DeepSeek, OpenAI-compatible, Anthropic-compatible, or Ollama models.",
+        description="LexiLoop: a local coding agent with an observable, recoverable harness.",
     )
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
@@ -281,12 +375,12 @@ def build_arg_parser():
         "--provider",
         choices=PROVIDER_CHOICES,
         default=None,
-        help="Model backend to use. Defaults to PICO_PROVIDER or deepseek.",
+        help="Model backend to use. Defaults to LEXILOOP_PROVIDER or deepseek.",
     )
     parser.add_argument(
         "--model",
         default=None,
-        help="Model name override. Defaults to qwen3.5:4b for Ollama, PICO_OPENAI_MODEL for openai, PICO_ANTHROPIC_MODEL for anthropic, and PICO_DEEPSEEK_MODEL for deepseek when set.",
+        help="Model name override. Defaults to qwen3.5:4b for Ollama, LEXILOOP_OPENAI_MODEL for openai, LEXILOOP_ANTHROPIC_MODEL for anthropic, and LEXILOOP_DEEPSEEK_MODEL for deepseek when set.",
     )
     parser.add_argument("--host", default=DEFAULT_OLLAMA_HOST, help="Ollama server URL.")
     parser.add_argument("--base-url", default=None, help="Provider API base URL for deepseek, openai, or anthropic.")
@@ -332,7 +426,11 @@ def main(argv=None):
         # 交互模式：每次读取一条用户输入，交给同一个 agent，
         # 因此 session history 和 working memory 会跨轮延续。
         try:
-            user_input = input("\npico> ").strip()
+            prompt_color = _supports_color()
+            prompt = _style("lexi", "mint", "bold", enabled=prompt_color) + _style(
+                " ❯ ", "violet", "bold", enabled=prompt_color
+            )
+            user_input = input("\n" + prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print("")
             return 0
