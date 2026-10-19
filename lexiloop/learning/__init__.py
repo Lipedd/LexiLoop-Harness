@@ -1,13 +1,12 @@
-"""Terminal-based technical English learning for LexiLoop."""
+"""Prompt-driven English learning for LexiLoop."""
 
-from .service import VocabularyCoach
+from .service import TranslationLearningService, TranslationResult, WordDetail
 from .store import LearningStore, default_learning_dir
-from .vocabulary import VocabularyEntry, load_vocabulary
 
 __all__ = [
     "LearningStore",
-    "VocabularyCoach",
-    "VocabularyEntry",
+    "TranslationLearningService",
+    "TranslationResult",
+    "WordDetail",
     "default_learning_dir",
-    "load_vocabulary",
 ]

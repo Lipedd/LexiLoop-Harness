@@ -13,7 +13,7 @@ import textwrap
 
 from .config import load_project_env, provider_env
 from .learning.prompt import LearningPrompt
-from .learning.service import VocabularyCoach
+from .learning.service import TranslationLearningService
 from .learning.store import LearningStore
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .runtime import LexiLoop, SessionStore
@@ -64,14 +64,11 @@ HELP_DETAILS = textwrap.dedent(
     /help    Show this help message.
     /memory  Show the agent's distilled working memory.
     /session Show the path to the saved session file.
-    /word    Show or update the current English word.
-             Usage: /word [next|known|again]
-    /stats   Show English-learning statistics.
+    /english Show the latest prompt translation and first five words.
+    /word    Alias for /english.
+    /stats   Show translation and word-frequency statistics.
     /reset   Clear the current session history and memory.
     /exit    Exit the agent.
-
-    Learning shortcuts while typing:
-    Alt+K mastered · Alt+A review again · Alt+J next word
     """
 ).strip()
 
@@ -446,42 +443,33 @@ def _build_learning_ui(args, agent):
     if not _learning_enabled(args):
         return None, None
     try:
-        coach = VocabularyCoach(
+        service = TranslationLearningService(
+            model_client=_build_model_client(args),
             store=LearningStore(),
             session_id=agent.session.get("id"),
         )
-        return coach, LearningPrompt(coach)
+        return service, LearningPrompt(service)
     except Exception as exc:
         print(f"English learning disabled: {exc}", file=sys.stderr)
         return None, None
 
 
-def _handle_learning_command(user_input, coach):
+def _handle_learning_command(user_input, service):
     """Return ``(handled, output)`` for commands owned by the learning layer."""
 
     command, *arguments = user_input.split()
-    if command not in {"/word", "/stats"}:
+    if command not in {"/english", "/word", "/stats"}:
         return False, ""
-    if coach is None:
+    if service is None:
         return True, "English learning is disabled. Start without --no-learning to enable it."
     try:
         if command == "/stats":
             if arguments:
                 return True, "Usage: /stats"
-            return True, coach.stats_text()
-
-        action = arguments[0].lower() if arguments else "show"
-        if len(arguments) > 1 or action not in {"show", "next", "known", "again"}:
-            return True, "Usage: /word [next|known|again]"
-        if action == "next":
-            coach.next_word()
-        elif action == "known":
-            coach.mark_known()
-        elif action == "again":
-            coach.mark_again()
-        if action != "show":
-            return True, coach.notice
-        return True, coach.word_text()
+            return True, service.stats_text()
+        if arguments:
+            return True, f"Usage: {command}"
+        return True, service.panel_text()
     except Exception as exc:
         return True, f"English learning is temporarily unavailable: {exc}"
 
@@ -507,7 +495,7 @@ def main(argv=None):
                 return 1
         return 0
 
-    coach, learning_ui = _build_learning_ui(args, agent)
+    learning_service, learning_ui = _build_learning_ui(args, agent)
 
     while True:
         # 交互模式：每次读取一条用户输入，交给同一个 agent，
@@ -523,11 +511,15 @@ def main(argv=None):
                 user_input = input("\n" + prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print("")
+            if learning_service is not None:
+                learning_service.close()
             return 0
 
         if not user_input:
             continue
         if user_input in {"/exit", "/quit"}:
+            if learning_service is not None:
+                learning_service.close()
             return 0
         if user_input == "/help":
             print(HELP_DETAILS)
@@ -542,18 +534,21 @@ def main(argv=None):
             agent.reset()
             print("session reset")
             continue
-        handled, output = _handle_learning_command(user_input, coach)
+        handled, output = _handle_learning_command(user_input, learning_service)
         if handled:
             print(output)
             continue
 
-        if coach is not None:
+        if learning_service is not None:
             try:
-                coach.observe_prompt(user_input)
+                # This sidecar request runs on its own model client and worker
+                # thread. The user task enters Agent Loop immediately below.
+                learning_service.submit(user_input)
             except Exception as exc:
-                # Learning is optional; storage failure must not block agent work.
+                # The learning sidecar must never block the coding task.
                 print(f"English learning disabled: {exc}", file=sys.stderr)
-                coach = None
+                learning_service.close()
+                learning_service = None
                 learning_ui = None
 
         print()
